@@ -6,6 +6,9 @@
  * Any tensor/data storage framework (eigen3, std::vector, ...) can be used,
  * as long as it can be converted to a DLPack tensor.
  */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 
 #include <chrono>
 #include <cstdint>
@@ -13,11 +16,13 @@
 #include <map>
 #include <stdfloat> // for bfloat16_t (C++23)
 #include <thread>
+#include<pthread.h>
+#include<sched.h>
+#include<cstring>
 #include <vector>
 #include <xtensor/xrandom.hpp>
 #include <xtensor/xtensor.hpp>
 #include <xtensor/xview.hpp>
-
 #include "dlpack_utils.h"
 #include "qant_native_computing_toolkit.h"
 
@@ -69,6 +74,9 @@ int main()
     auto n_matrices = 100;
     auto n_columns = 1000;
     auto n_rows = 1000;
+    cpu_set_t allowed;
+    CPU_ZERO(&allowed);
+    std::vector<int> cpu_ids;
 
     std::cout << "setting up test data" << std::endl;
     // create random matrices and vector
@@ -98,6 +106,20 @@ int main()
     {
         throw std::runtime_error("no NPUs found on this system");
     }
+    if(sched_getaffinity(0,sizeof(allowed),&allowed)!= 0){
+        std::cerr << "Cannot read CPU affinity:"<< std::generic_category().message(errno) << '\n';
+        return 1;
+    }
+    //cpu_ids={1,2,3};
+    for(int cpu=0;cpu<CPU_SETSIZE;++cpu){
+        if(CPU_ISSET(cpu, &allowed))
+        cpu_ids.push_back(cpu);
+    }
+
+    if(cpu_ids.size() < n_npus){
+        std::cerr << "Need at least " << n_npus<< " allowed CPUs for one CPU per worker\n";
+        return 1;
+    }    
 
     // perform dummy operation such that performance measurement later is not affected
     // by initialisation and calibration.
@@ -117,6 +139,7 @@ int main()
 
     std::vector<std::thread> threads;
     threads.reserve(n_npus);
+    
 
     auto chunk_size = n_matrices / n_npus;
     auto remainder = n_matrices % n_npus;
@@ -138,6 +161,15 @@ int main()
             device_ids[t]);
 
         start_idx = end_idx;
+        cpu_set_t set;
+        CPU_ZERO(&set);
+        CPU_SET(cpu_ids[t], &set);
+
+        int err = pthread_setaffinity_np(threads.back().native_handle(),sizeof(set),&set);
+
+        if(err != 0){
+            std::cerr << "Failed to pin worker "<<t<< ": " << std::strerror(err) << '\n';
+        }
     }
 
     for (auto &th : threads)
