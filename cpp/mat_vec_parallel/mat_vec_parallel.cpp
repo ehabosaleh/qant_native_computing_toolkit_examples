@@ -106,6 +106,7 @@ int main()
     {
         throw std::runtime_error("no NPUs found on this system");
     }
+    //get the allowed CPUs for this process and pin each worker thread to a different CPU
     if(sched_getaffinity(0,sizeof(allowed),&allowed)!= 0){
         std::cerr << "Cannot read CPU affinity:"<< std::generic_category().message(errno) << '\n';
         return 1;
@@ -161,15 +162,15 @@ int main()
             device_ids[t]);
 
         start_idx = end_idx;
+        // pin the thread to a CPU core to avoid migration between cores
         cpu_set_t set;
         CPU_ZERO(&set);
         CPU_SET(cpu_ids[t], &set);
-
         int err = pthread_setaffinity_np(threads.back().native_handle(),sizeof(set),&set);
-
         if(err != 0){
             std::cerr << "Failed to pin worker "<<t<< ": " << std::strerror(err) << '\n';
         }
+        
     }
 
     for (auto &th : threads)
